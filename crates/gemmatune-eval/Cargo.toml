@@ -1,0 +1,12 @@
+[package]
+name = "gemmatune-eval"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Local base-versus-adapter evaluation reports"
+
+[dependencies]
+gemmatune-core = { path = "../gemmatune-core" }
+gemmatune-lora = { path = "../gemmatune-lora" }
+serde.workspace = true
+serde_json.workspace = true

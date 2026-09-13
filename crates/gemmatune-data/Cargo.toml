@@ -1,0 +1,12 @@
+[package]
+name = "gemmatune-data"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Local chat-dataset preparation and deterministic tokenization"
+
+[dependencies]
+gemmatune-core = { path = "../gemmatune-core" }
+gemmatune-gemma = { path = "../gemmatune-gemma" }
+serde.workspace = true
+serde_json.workspace = true

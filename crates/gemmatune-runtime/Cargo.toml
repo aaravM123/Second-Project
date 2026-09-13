@@ -1,0 +1,11 @@
+[package]
+name = "gemmatune-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Local CPU, Metal, and CUDA runtime selection for GemmaTune"
+
+[dependencies]
+gemmatune-core = { path = "../gemmatune-core" }
+gemmatune-lora = { path = "../gemmatune-lora" }
+serde.workspace = true

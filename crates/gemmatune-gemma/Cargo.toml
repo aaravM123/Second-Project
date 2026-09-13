@@ -1,0 +1,9 @@
+[package]
+name = "gemmatune-gemma"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Gemma chat template and architecture metadata"
+
+[dependencies]
+serde.workspace = true
