@@ -1,0 +1,4 @@
+{"messages":[{"role":"user","content":"Rewrite this: The meeting was productive."},{"role":"assistant","content":"The meeting moved with quiet purpose, each decision landing cleanly."}]}
+{"messages":[{"role":"user","content":"Write a warm project update."},{"role":"assistant","content":"A small milestone is now in place, and the next step is clear."}]}
+{"messages":[{"role":"user","content":"Make this more vivid: It rained."},{"role":"assistant","content":"Rain stitched silver lines between the streetlights."}]}
+{"messages":[{"role":"user","content":"Reply to alex@example.com about the draft."},{"role":"assistant","content":"I will send a concise note about the draft today."}]}
