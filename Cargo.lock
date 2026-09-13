@@ -29,12 +29,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "gemmatune-lora"
+version = "0.1.0"
+dependencies = [
+ "gemmatune-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "gemmatune-macros"
 version = "0.1.0"
 dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "gemmatune-runtime"
+version = "0.1.0"
+dependencies = [
+ "gemmatune-core",
+ "gemmatune-lora",
+ "serde",
 ]
 
 [[package]]
