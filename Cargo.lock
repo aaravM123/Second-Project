@@ -12,6 +12,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "gemmatune-data"
+version = "0.1.0"
+dependencies = [
+ "gemmatune-core",
+ "gemmatune-gemma",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "gemmatune-gemma"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "gemmatune-macros"
 version = "0.1.0"
 dependencies = [

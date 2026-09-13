@@ -2,6 +2,8 @@
 members = [
     "crates/gemmatune-macros",
     "crates/gemmatune-core",
+    "crates/gemmatune-gemma",
+    "crates/gemmatune-data",
 ]
 resolver = "2"
 
