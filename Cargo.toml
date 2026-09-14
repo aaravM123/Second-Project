@@ -16,7 +16,9 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/example/gemmatune"
-rust-version = "1.75"
+# Candle 0.9's Gemma 3 implementation is validated in this workspace with
+# Rust 1.83; declare that minimum instead of advertising unsupported 1.75.
+rust-version = "1.83"
 
 [workspace.dependencies]
 serde = { version = "1.0", features = ["derive"] }
