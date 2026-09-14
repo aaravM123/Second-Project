@@ -1,0 +1,22 @@
+[package]
+name = "gemmatune-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Fully local GemmaTune training, evaluation, and serving CLI"
+
+[[bin]]
+name = "gemmatune"
+path = "src/main.rs"
+
+[dependencies]
+gemmatune-core = { path = "../gemmatune-core" }
+gemmatune-data = { path = "../gemmatune-data" }
+gemmatune-eval = { path = "../gemmatune-eval" }
+gemmatune-gemma = { path = "../gemmatune-gemma" }
+gemmatune-lora = { path = "../gemmatune-lora" }
+gemmatune-runtime = { path = "../gemmatune-runtime" }
+indexmap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
