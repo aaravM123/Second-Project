@@ -6,6 +6,7 @@ members = [
     "crates/gemmatune-data",
     "crates/gemmatune-lora",
     "crates/gemmatune-runtime",
+    "crates/gemmatune-eval",
 ]
 resolver = "2"
 
