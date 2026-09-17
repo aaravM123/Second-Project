@@ -4,6 +4,8 @@
 use serde::{Deserialize, Serialize};
 use std::{fmt, fs, io, path::Path};
 
+pub use gemmatune_macros::{fine_tune, gemma_model, training_dataset};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Device {
