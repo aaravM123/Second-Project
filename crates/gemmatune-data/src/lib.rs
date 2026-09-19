@@ -68,14 +68,22 @@ fn redact(text: &str) -> (String, usize) {
     let words = text
         .split_whitespace()
         .map(|word| {
-            if word.contains('@') && word.contains('.') {
-                replacements += 1;
-                "[REDACTED_EMAIL]".to_owned()
-            } else if word.chars().filter(char::is_ascii_digit).count() >= 7 {
-                replacements += 1;
-                "[REDACTED_NUMBER]".to_owned()
-            } else {
-                word.to_owned()
+            let is_email = word.contains('@') && word.contains('.');
+            let is_number = word.chars().filter(char::is_ascii_digit).count() >= 7;
+            match (is_email, is_number) {
+                (true, true) => {
+                    replacements += 2;
+                    "[REDACTED_EMAIL] [REDACTED_NUMBER]".to_owned()
+                }
+                (true, false) => {
+                    replacements += 1;
+                    "[REDACTED_EMAIL]".to_owned()
+                }
+                (false, true) => {
+                    replacements += 1;
+                    "[REDACTED_NUMBER]".to_owned()
+                }
+                (false, false) => word.to_owned(),
             }
         })
         .collect::<Vec<_>>();
@@ -131,5 +139,30 @@ pub fn prepare_chat_dataset(
         validation,
         redacted_fields,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn redacts_email_and_number_in_the_same_word() {
+        let (redacted, count) = redact("contact ada1234567@example.com please");
+        assert_eq!(
+            redacted,
+            "contact [REDACTED_EMAIL] [REDACTED_NUMBER] please"
+        );
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn still_redacts_email_and_number_separately() {
+        let (redacted, count) = redact("mail ada@example.com or call 555-123-4567");
+        assert_eq!(
+            redacted,
+            "mail [REDACTED_EMAIL] or call [REDACTED_NUMBER]"
+        );
+        assert_eq!(count, 2);
+    }
 }
 
