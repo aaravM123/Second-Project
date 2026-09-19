@@ -1,0 +1,11 @@
+[package]
+name = "gemmatune-lora"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "LoRA adapter injection plan and portable adapter checkpoints"
+
+[dependencies]
+gemmatune-core = { path = "../gemmatune-core" }
+serde.workspace = true
+serde_json.workspace = true
