@@ -169,4 +169,9 @@ mod tests {
         let batch = CausalBatch::from_tokens(&[1, 2, 3]).unwrap();
         assert!(causal_cross_entropy(&[vec![0.0, 1.0]], &batch).is_err());
     }
+
+    #[test]
+    fn rejects_single_token_causal_examples() {
+        assert!(CausalBatch::from_tokens(&[42]).is_err());
+    }
 }
