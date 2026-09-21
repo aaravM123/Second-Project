@@ -1,13 +1,16 @@
 //! Local Gemma 3 1B IT inference using Candle and checkpoint-local safetensors.
 
-use candle_core::{DType, Device as CandleDevice, Tensor, D};
-use candle_nn::{Activation, VarBuilder};
+pub mod training;
+
+use candle_core::{DType, Device as CandleDevice, Result as CandleResult, Shape, Tensor, D};
+use candle_nn::{var_builder::SimpleBackend, Activation, Init, VarBuilder};
 use candle_transformers::models::gemma3;
 use gemmatune_core::Device;
+use gemmatune_lora::TrainableAdapter;
 use std::{
     fs,
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Arc, Mutex},
 };
 
 #[derive(Debug, Clone)]
@@ -101,12 +104,103 @@ fn safetensor_paths(root: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(paths)
 }
 
+/// A VarBuilder backend that adds the current LoRA delta while each Gemma
+/// projection is loaded. It preserves every non-adapter safetensor unchanged.
+struct LoraBackend {
+    base: candle_core::safetensors::MmapedSafetensors,
+    adapter: Arc<Mutex<TrainableAdapter>>,
+}
+
+impl LoraBackend {
+    fn module_for(name: &str) -> Option<&str> {
+        ["q_proj", "k_proj", "v_proj", "o_proj"]
+            .into_iter()
+            .find(|module| name.ends_with(&format!("self_attn.{module}.weight")))
+    }
+}
+
+impl SimpleBackend for LoraBackend {
+    fn get(
+        &self,
+        shape: Shape,
+        name: &str,
+        _init: Init,
+        dtype: DType,
+        device: &CandleDevice,
+    ) -> CandleResult<Tensor> {
+        let base = self.base.load(name, device)?.to_dtype(dtype)?;
+        let Some(module) = Self::module_for(name) else {
+            return Ok(base);
+        };
+        let adapter = self.adapter.lock().expect("adapter lock is poisoned");
+        let tensor = adapter.tensor(module).expect("LoRA plan has every attention projection");
+        let delta = Tensor::from_vec(
+            tensor.delta_weight(),
+            (tensor.spec.output_features, tensor.spec.input_features),
+            device,
+        )?.to_dtype(dtype)?;
+        if shape.dims() != delta.dims() {
+            candle_core::bail!("LoRA shape mismatch for {name}");
+        }
+        base.add(&delta)
+    }
+
+    fn contains_tensor(&self, name: &str) -> bool {
+        self.base.contains_tensor(name)
+    }
+}
+
 /// Loaded, local Gemma 3 1B IT weights. Candle's Gemma implementation performs
 /// GQA, Q/K RMS normalization, local/global masks, RoPE, and a KV cache.
 pub struct LocalGemma {
     model: Mutex<gemma3::Model>,
     device: CandleDevice,
     pub backend: BackendStatus,
+}
+
+/// Keeps adapter state and the model directory together so that a caller can
+/// rebuild the Candle graph after AdamW has changed A/B values.
+pub struct AdapterRuntime {
+    root: PathBuf,
+    requested: Device,
+    adapter: Arc<Mutex<TrainableAdapter>>,
+    model: LocalGemma,
+}
+
+impl AdapterRuntime {
+    pub fn load(
+        root: impl AsRef<Path>,
+        requested: Device,
+        adapter: TrainableAdapter,
+    ) -> Result<Self, String> {
+        let root = root.as_ref().to_path_buf();
+        let adapter = Arc::new(Mutex::new(adapter));
+        let model = LocalGemma::load_1b_it_with_adapter(&root, requested, adapter.clone())?;
+        Ok(Self { root, requested, adapter, model })
+    }
+
+    pub fn adapter(&self) -> Arc<Mutex<TrainableAdapter>> {
+        self.adapter.clone()
+    }
+
+    pub fn generate(&self, prompt_ids: &[u32], max_new_tokens: usize) -> Result<Vec<u32>, String> {
+        self.model.generate(prompt_ids, max_new_tokens)
+    }
+
+    /// The Candle model stores merged projection tensors. Rebuild it after an
+    /// optimizer step so every next forward pass observes the changed adapter.
+    pub fn reload_after_update(&mut self) -> Result<(), String> {
+        self.model = LocalGemma::load_1b_it_with_adapter(
+            &self.root,
+            self.requested,
+            self.adapter.clone(),
+        )?;
+        Ok(())
+    }
+
+    pub fn backend(&self) -> &BackendStatus {
+        &self.model.backend
+    }
 }
 
 impl LocalGemma {
@@ -119,6 +213,29 @@ impl LocalGemma {
         };
         let model = gemma3::Model::new(false, &gemma_3_1b_config(), builder)
             .map_err(|error| format!("cannot load Gemma 3 1B IT tensor layout: {error}"))?;
+        Ok(Self { model: Mutex::new(model), device, backend })
+    }
+
+    /// Load base Gemma weights with the current adapter merged into every
+    /// Q/K/V/O projection. Reload after optimizer updates to observe new values.
+    pub fn load_1b_it_with_adapter(
+        root: impl AsRef<Path>,
+        requested: Device,
+        adapter: Arc<Mutex<TrainableAdapter>>,
+    ) -> Result<Self, String> {
+        let (device, backend) = select_backend(requested)?;
+        let paths = safetensor_paths(root.as_ref())?;
+        let base = unsafe {
+            candle_core::safetensors::MmapedSafetensors::multi(&paths)
+                .map_err(|error| format!("cannot map Gemma safetensors: {error}"))?
+        };
+        let builder = VarBuilder::from_backend(
+            Box::new(LoraBackend { base, adapter }),
+            DType::BF16,
+            device.clone(),
+        );
+        let model = gemma3::Model::new(false, &gemma_3_1b_config(), builder)
+            .map_err(|error| format!("cannot inject LoRA into Gemma 3 1B IT: {error}"))?;
         Ok(Self { model: Mutex::new(model), device, backend })
     }
 
