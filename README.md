@@ -73,8 +73,38 @@ gemmatune serve ./runs/latest --port 8080
 ```
 
 The server listens only on `127.0.0.1` and accepts
-`POST /v1/chat/completions`. It applies the Gemma IT `user`/`model` prompt
-template, tokenizes locally, and generates from the run's adapter.
+`POST /v1/chat/completions`. Before it binds the port, `serve` reads
+`manifest.json` and `adapter.json`, loads `adapter.safetensors`, and merges its
+LoRA matrices into the matching Q/K/V/O Gemma projections. It therefore serves
+the trained adapter-injected model, never a fallback frozen-base model.
+
+For example:
+
+```bash
+curl --json '{
+  "model": "gemma-3-1b-it",
+  "messages": [
+    {"role": "user", "content": "Write a one-line welcome message."}
+  ],
+  "max_tokens": 48
+}' http://127.0.0.1:8080/v1/chat/completions
+```
+
+Requests use a JSON subset compatible with OpenAI chat completions:
+
+- `messages` is required and must contain non-empty `user`, `assistant`, or
+  `model` text turns. Previous assistant turns are rendered as Gemma `model`
+  turns.
+- `model`, when supplied, must exactly match the checkpoint recorded in the
+  run manifest. This prevents accidentally addressing an incompatible adapter.
+- `max_tokens` defaults to 64 and is limited to 1–512. The prompt and output
+  together must still fit Gemma's 32K-token context window.
+- Streaming is not implemented; omit `stream` or set it to `false`.
+
+Malformed HTTP, JSON, or request fields receive a JSON `400 Bad Request`
+response. The server processes one request per connection and caps request
+bodies at 64 KiB. It is intentionally loopback-only, so exposing it beyond
+the local machine requires a separate, authenticated reverse proxy.
 
 ## Current constraints
 
