@@ -1,6 +1,7 @@
 //! Local Gemma 3 1B IT inference using Candle and checkpoint-local safetensors.
 
 pub mod training;
+pub mod trainable;
 
 use candle_core::{DType, Device as CandleDevice, Result as CandleResult, Shape, Tensor, D};
 use candle_nn::{var_builder::SimpleBackend, Activation, Init, VarBuilder};
