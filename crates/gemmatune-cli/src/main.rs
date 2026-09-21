@@ -4,8 +4,8 @@ use gemmatune_core::{
 use gemmatune_data::{prepare_chat_dataset, GemmaTokenizer, GEMMA3_TOKENIZER_FILE};
 use gemmatune_eval::evaluate;
 use gemmatune_gemma::ChatMessage;
-use gemmatune_lora::{injection_plan, AdapterCheckpoint};
-use gemmatune_runtime::LocalGemma;
+use gemmatune_lora::{injection_plan, AdapterCheckpoint, TrainableAdapter};
+use gemmatune_runtime::{trainable::fine_tune as optimize_lora, LocalGemma};
 use serde::Serialize;
 use std::{
     env, fs,
@@ -27,7 +27,7 @@ fn train_personal_model() {}
 fn usage() {
     eprintln!(
         "GemmaTune — local Gemma LoRA tooling\n\
-         Usage:\n  gemmatune train <dataset-dir> [--device cpu|metal|cuda]\n\
+         Usage:\n  gemmatune finetune <dataset-dir> [--device cpu|metal|cuda]\n\
          \x20 gemmatune evaluate <run-dir>\n  gemmatune serve <run-dir> [--port 8080] [--once]\n\
          \nDataset directories contain gemmatune.toml and conversations.jsonl."
     );
@@ -83,25 +83,35 @@ fn load_local_model(config: &TrainingConfig) -> Result<(GemmaTokenizer, LocalGem
     Ok((tokenizer, model))
 }
 
-fn train(root: &Path, args: &[String]) -> Result<(), String> {
+fn finetune(root: &Path, args: &[String]) -> Result<(), String> {
     let mut config = read_config(root)?;
     parse_device(args, &mut config)?;
     config.validate()?;
-    let (tokenizer, model) = load_local_model(&config)?;
+    let tokenizer = GemmaTokenizer::open(local_model_dir(&config)?.join(GEMMA3_TOKENIZER_FILE))
+        .map_err(|error| format!("cannot load Gemma tokenizer: {error}"))?;
     let prepared = prepare_chat_dataset(root, &config.dataset, &tokenizer)
         .map_err(|error| format!("dataset preparation failed: {error}"))?;
-    let adapter = injection_plan(&config.model.checkpoint, &config.lora)?;
-    // Execute the real Gemma prefill path before persisting the adapter plan.
-    // LoRA update/injection is implemented in the following training layer.
-    model.generate(&prepared.train[0], 1)?;
+    let plan = injection_plan(&config.model.checkpoint, &config.lora)?;
+    let result = optimize_lora(
+        local_model_dir(&config)?,
+        config.model.device,
+        TrainableAdapter::from_plan(plan.clone()),
+        &prepared.train,
+    )?;
+    if !result.adapter.has_updated_weights() {
+        return Err("Candle completed without updating the LoRA variables".into());
+    }
 
     let run_dir = PathBuf::from("runs/latest");
     fs::create_dir_all(&run_dir)
         .map_err(|error| format!("cannot create {}: {error}", run_dir.display()))?;
-    let adapter_path = run_dir.join("adapter.json");
-    adapter
-        .write_to(&adapter_path)
+    result
+        .adapter
+        .write_safetensors(run_dir.join("adapter.safetensors"))
+        .map_err(|error| format!("cannot write adapter safetensors: {error}"))?;
+    plan.write_to(run_dir.join("adapter.json"))
         .map_err(|error| format!("cannot write adapter: {error}"))?;
+    let backend = config.model.device.to_string();
     let manifest = TrainingManifest {
         schema_version: 1,
         created_at_unix_secs: now_unix_seconds(),
@@ -109,17 +119,17 @@ fn train(root: &Path, args: &[String]) -> Result<(), String> {
         train_examples: prepared.train.len(),
         validation_examples: prepared.validation.len(),
         token_count: prepared.token_count(),
-        backend: model.backend.implementation.clone(),
-        training_status: "model-prefill-complete".into(),
+        backend,
+        training_status: "completed".into(),
         adapter_checkpoint: "adapter.json".into(),
     };
     manifest
         .write_to(run_dir.join("manifest.json"))
         .map_err(|error| format!("cannot write manifest: {error}"))?;
     println!(
-        "Run saved to {} ({} train / {} validation examples, {} tokens).\nBackend: {} — {}",
+        "Run saved to {} ({} train / {} validation examples, {} tokens, {} AdamW steps, loss {:.4}).\nBackend: {}",
         run_dir.display(), manifest.train_examples, manifest.validation_examples, manifest.token_count,
-        model.backend.implementation, model.backend.note,
+        result.steps, result.mean_loss, manifest.backend,
     );
     Ok(())
 }
@@ -246,11 +256,11 @@ fn main() {
     );
     let arguments = env::args().skip(1).collect::<Vec<_>>();
     let result = match arguments.first().map(String::as_str) {
-        Some("train") => arguments
+        Some("finetune") => arguments
             .get(1)
             .map(Path::new)
-            .ok_or_else(|| "train needs a dataset directory".into())
-            .and_then(|root| train(root, &arguments[2..])),
+            .ok_or_else(|| "finetune needs a dataset directory".into())
+            .and_then(|root| finetune(root, &arguments[2..])),
         Some("evaluate") => arguments
             .get(1)
             .map(Path::new)
