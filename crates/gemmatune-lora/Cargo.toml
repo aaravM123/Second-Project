@@ -9,3 +9,4 @@ description = "LoRA adapter injection plan and portable adapter checkpoints"
 gemmatune-core = { path = "../gemmatune-core" }
 serde.workspace = true
 serde_json.workspace = true
+safetensors.workspace = true
