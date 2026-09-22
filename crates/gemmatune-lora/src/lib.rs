@@ -1,5 +1,3 @@
-//! LoRA injection plans and JSON adapter checkpoints.
-
 use gemmatune_core::LoraConfig;
 use safetensors::{
     tensor::{Dtype, TensorView},
@@ -13,13 +11,9 @@ pub struct AdapterTensor {
     pub module: String,
     pub rank: u16,
     pub alpha: f32,
-    /// Base linear input width.
     pub input_features: usize,
-    /// Base linear output width.
     pub output_features: usize,
-    /// LoRA A has layout `[rank, input_features]`.
     pub shape_a: (usize, usize),
-    /// LoRA B has layout `[output_features, rank]`.
     pub shape_b: (usize, usize),
     pub seed: u64,
 }
@@ -48,7 +42,6 @@ pub fn injection_plan(
         .enumerate()
         .map(|(index, module)| {
             let (input_features, output_features) = match module.as_str() {
-                // Gemma 3 1B: 4 Q heads × 256 dims and 1 KV head × 256 dims.
                 "q_proj" => (1152, 1024),
                 "k_proj" | "v_proj" => (1152, 256),
                 "o_proj" => (1024, 1152),
@@ -92,10 +85,6 @@ impl AdapterCheckpoint {
     }
 }
 
-/// Mutable low-rank weights for one Gemma projection.
-///
-/// `a` is `[rank, input]`, while `b` is `[output, rank]`; this permits the
-/// runtime to inject `scale * B @ A` directly into the matching base weight.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TrainableTensor {
     pub spec: AdapterTensor,
@@ -216,7 +205,6 @@ impl TrainableTensor {
     }
 }
 
-/// The trainable state for every injected Gemma 3 1B projection.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TrainableAdapter {
     pub base_checkpoint: String,
@@ -268,10 +256,6 @@ impl TrainableAdapter {
             .collect())
     }
 
-    /// Persist the trainable LoRA matrices in standard safetensors format.
-    ///
-    /// The JSON sidecar holds the model/configuration identity while the tensor
-    /// file contains only actual A/B trainable values.
     pub fn write_safetensors(&self, path: impl AsRef<Path>) -> io::Result<()> {
         let mut buffers = HashMap::new();
         for tensor in &self.tensors {
