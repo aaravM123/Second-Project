@@ -1,6 +1,3 @@
-//! Loss accounting and token batching shared by the adapter trainer.
-
-/// A causal language-model sample with every position shifted one token ahead.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CausalBatch {
     pub inputs: Vec<u32>,
@@ -23,7 +20,6 @@ impl CausalBatch {
     }
 }
 
-/// Numerically stable negative log-likelihood for one vocabulary-logit row.
 pub fn token_cross_entropy(logits: &[f32], target: u32) -> Result<f32, String> {
     let target = target as usize;
     if target >= logits.len() {
@@ -34,7 +30,6 @@ pub fn token_cross_entropy(logits: &[f32], target: u32) -> Result<f32, String> {
     Ok(normalizer - logits[target])
 }
 
-/// Gradient of softmax cross entropy with respect to its logits.
 pub fn token_cross_entropy_gradient(logits: &[f32], target: u32) -> Result<Vec<f32>, String> {
     let target = target as usize;
     if target >= logits.len() {
@@ -50,8 +45,6 @@ pub fn token_cross_entropy_gradient(logits: &[f32], target: u32) -> Result<Vec<f
         .collect())
 }
 
-/// Aggregate teacher-forced sequence loss. Runtime callers feed one logits row
-/// for each shifted target in a `CausalBatch`.
 pub fn causal_cross_entropy(rows: &[Vec<f32>], batch: &CausalBatch) -> Result<f32, String> {
     if rows.len() != batch.targets.len() {
         return Err(format!(
@@ -70,8 +63,6 @@ pub fn causal_cross_entropy(rows: &[Vec<f32>], batch: &CausalBatch) -> Result<f3
     Ok(sum / batch.targets.len() as f32)
 }
 
-/// Select every token except masked positions. A caller can use this for
-/// assistant-only chat losses without allocating a dense attention mask.
 pub fn assistant_targets(tokens: &[u32], loss_mask: &[bool]) -> Result<Vec<u32>, String> {
     if tokens.len() != loss_mask.len() {
         return Err("token and loss-mask lengths differ".into());
@@ -83,7 +74,6 @@ pub fn assistant_targets(tokens: &[u32], loss_mask: &[bool]) -> Result<Vec<u32>,
         .collect())
 }
 
-/// L2 gradient norm used to keep a small LoRA update stable on CPU training.
 pub fn gradient_norm(gradients: &[&[f32]]) -> f32 {
     gradients
         .iter()
@@ -93,7 +83,6 @@ pub fn gradient_norm(gradients: &[&[f32]]) -> f32 {
         .sqrt()
 }
 
-/// Scale gradients in place when their combined norm exceeds `maximum`.
 pub fn clip_gradients(gradients: &mut [&mut [f32]], maximum: f32) -> Result<f32, String> {
     if !maximum.is_finite() || maximum <= 0.0 {
         return Err("maximum gradient norm must be positive".into());
