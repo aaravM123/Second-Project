@@ -35,11 +35,14 @@ The command writes an inspectable run directory:
 runs/latest/
 ├── manifest.json
 ├── adapter.json
-└── adapter.safetensors
+├── adapter.safetensors
+└── heldout.json
 ```
 
 `adapter.safetensors` contains LoRA matrices; `adapter.json` records the base
 checkpoint and rank/alpha configuration required to attach them safely.
+`heldout.json` stores the redacted, tokenized validation conversations used by
+the run. It is an evaluation artifact, not a copy of the source JSONL file.
 Runs are local and resumable from their stored adapter values; base checkpoint
 weights are never modified by the fine-tuning command.
 Use the same checkpoint directory when resuming a run.
@@ -51,9 +54,17 @@ Keep adapter artifacts with their matching model revision.
 gemmatune evaluate ./runs/latest
 ```
 
-Evaluation runs the frozen base and adapter-injected model on held-out token
-sequences. It reports measured token accuracy for both paths rather than a
-rank-derived synthetic score.
+Evaluation loads `adapter.safetensors`, rebuilds a separate adapter-injected
+Gemma model, and compares it with a frozen-base model. For each stored held-out
+conversation, both models receive every token except the final one and greedily
+predict that final token. `evaluation.json` records the two measured accuracies
+and their difference; it does not infer a score from rank, alpha, or adapter
+metadata.
+
+Evaluation needs `manifest.json`, `adapter.json`, `adapter.safetensors`, and
+`heldout.json` from the same completed run, plus the local base checkpoint
+named by `model.local_path`. It never retrains, rewrites adapter weights, or
+reads the original dataset directory.
 
 ## Serve locally
 
