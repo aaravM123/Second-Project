@@ -1,5 +1,3 @@
-//! Local Gemma 3 1B IT inference using Candle and checkpoint-local safetensors.
-
 pub mod training;
 pub mod trainable;
 
@@ -105,8 +103,6 @@ fn safetensor_paths(root: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(paths)
 }
 
-/// A VarBuilder backend that adds the current LoRA delta while each Gemma
-/// projection is loaded. It preserves every non-adapter safetensor unchanged.
 struct LoraBackend {
     base: candle_core::safetensors::MmapedSafetensors,
     adapter: Arc<Mutex<TrainableAdapter>>,
@@ -151,16 +147,12 @@ impl SimpleBackend for LoraBackend {
     }
 }
 
-/// Loaded, local Gemma 3 1B IT weights. Candle's Gemma implementation performs
-/// GQA, Q/K RMS normalization, local/global masks, RoPE, and a KV cache.
 pub struct LocalGemma {
     model: Mutex<gemma3::Model>,
     device: CandleDevice,
     pub backend: BackendStatus,
 }
 
-/// Keeps adapter state and the model directory together so that a caller can
-/// rebuild the Candle graph after AdamW has changed A/B values.
 pub struct AdapterRuntime {
     root: PathBuf,
     requested: Device,
@@ -188,8 +180,6 @@ impl AdapterRuntime {
         self.model.generate(prompt_ids, max_new_tokens)
     }
 
-    /// The Candle model stores merged projection tensors. Rebuild it after an
-    /// optimizer step so every next forward pass observes the changed adapter.
     pub fn reload_after_update(&mut self) -> Result<(), String> {
         self.model = LocalGemma::load_1b_it_with_adapter(
             &self.root,
@@ -217,8 +207,6 @@ impl LocalGemma {
         Ok(Self { model: Mutex::new(model), device, backend })
     }
 
-    /// Load base Gemma weights with the current adapter merged into every
-    /// Q/K/V/O projection. Reload after optimizer updates to observe new values.
     pub fn load_1b_it_with_adapter(
         root: impl AsRef<Path>,
         requested: Device,
