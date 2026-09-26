@@ -1,9 +1,10 @@
 use candle_core::{DType, Device, Result as CandleResult, Tensor, Var, D};
-use candle_nn::VarBuilder;
+use candle_nn::{optim::Optimizer, AdamW, ParamsAdamW, VarBuilder};
 use candle_transformers::utils::repeat_kv;
 use gemmatune_core::Device as RequestedDevice;
 use gemmatune_lora::{TrainableAdapter, TrainableTensor};
 use std::{path::Path, sync::Arc};
+use crate::training::CausalBatch;
 
 pub const GEMMA_3_1B_LAYERS: usize = 26;
 const HIDDEN: usize = 1152;
@@ -52,14 +53,13 @@ struct LoraLinear {
     scale: f64,
 }
 impl LoraLinear {
-    fn load(vb: VarBuilder, adapter: &TrainableTensor) -> Result<Self> {
+    fn load(vb: VarBuilder, adapter: &TrainableTensor, variables: &(Var, Var)) -> Result<Self> {
         let spec = &adapter.spec;
         let base = FrozenLinear::load(vb, spec.input_features, spec.output_features)?;
-        let device = base.weight.device().clone();
         Ok(Self {
             base,
-            a: Var::from_vec(adapter.a.clone(), spec.shape_a, &device)?,
-            b: Var::from_vec(adapter.b.clone(), spec.shape_b, &device)?,
+            a: variables.0.clone(),
+            b: variables.1.clone(),
             scale: adapter.scaling() as f64,
         })
     }
@@ -75,9 +75,6 @@ impl LoraLinear {
         self.base.forward(x)?.add(&update)
     }
 
-    fn variables(&self) -> [Var; 2] {
-        [self.a.clone(), self.b.clone()]
-    }
 }
 struct Rotary {
     sin: Tensor,
@@ -120,7 +117,12 @@ struct Attention {
     rotary: Arc<Rotary>,
 }
 impl Attention {
-    fn load(vb: VarBuilder, adapter: &TrainableAdapter, rotary: Arc<Rotary>) -> Result<Self> {
+    fn load(
+        vb: VarBuilder,
+        adapter: &TrainableAdapter,
+        variables: &[(String, Var, Var)],
+        rotary: Arc<Rotary>,
+    ) -> Result<Self> {
         let q = adapter
             .tensor("q_proj")
             .expect("validated adapter has q_proj");
@@ -133,11 +135,18 @@ impl Attention {
         let o = adapter
             .tensor("o_proj")
             .expect("validated adapter has o_proj");
+        let variables_for = |module| {
+            variables
+                .iter()
+                .find(|(name, _, _)| name == module)
+                .map(|(_, a, b)| (a.clone(), b.clone()))
+                .expect("validated adapter has LoRA variables")
+        };
         Ok(Self {
-            q: LoraLinear::load(vb.pp("q_proj"), q)?,
-            k: LoraLinear::load(vb.pp("k_proj"), k)?,
-            v: LoraLinear::load(vb.pp("v_proj"), v)?,
-            o: LoraLinear::load(vb.pp("o_proj"), o)?,
+            q: LoraLinear::load(vb.pp("q_proj"), q, &variables_for("q_proj"))?,
+            k: LoraLinear::load(vb.pp("k_proj"), k, &variables_for("k_proj"))?,
+            v: LoraLinear::load(vb.pp("v_proj"), v, &variables_for("v_proj"))?,
+            o: LoraLinear::load(vb.pp("o_proj"), o, &variables_for("o_proj"))?,
             q_norm: RmsNorm::load(vb.pp("q_norm"))?,
             k_norm: RmsNorm::load(vb.pp("k_norm"))?,
             rotary,
@@ -176,17 +185,6 @@ impl Attention {
         self.o.forward(&output)
     }
 
-    fn variables(&self) -> Vec<Var> {
-        [
-            self.q.variables(),
-            self.k.variables(),
-            self.v.variables(),
-            self.o.variables(),
-        ]
-        .into_iter()
-        .flatten()
-        .collect()
-    }
 }
 struct Mlp {
     gate: FrozenLinear,
@@ -220,11 +218,12 @@ impl Layer {
     fn load(
         vb: VarBuilder,
         adapter: &TrainableAdapter,
+        variables: &[(String, Var, Var)],
         rotary: Arc<Rotary>,
         local: bool,
     ) -> Result<Self> {
         Ok(Self {
-            attention: Attention::load(vb.pp("self_attn"), adapter, rotary)?,
+            attention: Attention::load(vb.pp("self_attn"), adapter, variables, rotary)?,
             mlp: Mlp::load(vb.pp("mlp"))?,
             input_norm: RmsNorm::load(vb.pp("input_layernorm"))?,
             pre_ff_norm: RmsNorm::load(vb.pp("pre_feedforward_layernorm"))?,
@@ -242,6 +241,8 @@ impl Layer {
     }
 }
 pub struct TrainableGemmaDecoder {
+    adapter: TrainableAdapter,
+    variables: Vec<(String, Var, Var)>,
     embeddings: Tensor,
     layers: Vec<Layer>,
     norm: RmsNorm,
@@ -273,6 +274,18 @@ impl TrainableGemmaDecoder {
             .get((VOCABULARY, HIDDEN), "weight")
             .and_then(|weight| weight.to_dtype(DType::F32))
             .map_err(|error| format!("cannot load Gemma token embeddings: {error}"))?;
+        let variables = adapter
+            .tensors
+            .iter()
+            .map(|tensor| {
+                Ok((
+                    tensor.spec.module.clone(),
+                    Var::from_vec(tensor.a.clone(), tensor.spec.shape_a, &device)?,
+                    Var::from_vec(tensor.b.clone(), tensor.spec.shape_b, &device)?,
+                ))
+            })
+            .collect::<Result<Vec<_>>>()
+            .map_err(|error| format!("cannot initialize LoRA variables: {error}"))?;
         let global =
             Arc::new(Rotary::new(1_000_000.0, &device).map_err(|error| error.to_string())?);
         let local = Arc::new(Rotary::new(10_000.0, &device).map_err(|error| error.to_string())?);
@@ -283,6 +296,7 @@ impl TrainableGemmaDecoder {
                 Layer::load(
                     vb.pp("layers").pp(index),
                     adapter,
+                    &variables,
                     if uses_local {
                         local.clone()
                     } else {
@@ -296,6 +310,8 @@ impl TrainableGemmaDecoder {
         let norm = RmsNorm::load(vb.pp("norm"))
             .map_err(|error| format!("cannot load Gemma output norm: {error}"))?;
         Ok(Self {
+            adapter: adapter.clone(),
+            variables,
             embeddings,
             layers,
             norm,
@@ -304,10 +320,31 @@ impl TrainableGemmaDecoder {
     }
 
     pub fn adapter_variables(&self) -> Vec<Var> {
-        self.layers
+        self.variables
             .iter()
-            .flat_map(|layer| layer.attention.variables())
+            .flat_map(|(_, a, b)| [a.clone(), b.clone()])
             .collect()
+    }
+
+    /// Extract the updated values from Candle variables for safetensor output.
+    pub fn trained_adapter(&self) -> std::result::Result<TrainableAdapter, String> {
+        let mut adapter = self.adapter.clone();
+        for tensor in &mut adapter.tensors {
+            let (_, a, b) = self
+                .variables
+                .iter()
+                .find(|(module, _, _)| module == &tensor.spec.module)
+                .expect("every adapter tensor has Candle variables");
+            tensor.a = a
+                .as_tensor()
+                .to_vec1()
+                .map_err(|error| format!("cannot read updated LoRA A: {error}"))?;
+            tensor.b = b
+                .as_tensor()
+                .to_vec1()
+                .map_err(|error| format!("cannot read updated LoRA B: {error}"))?;
+        }
+        Ok(adapter)
     }
 
     pub fn forward(&self, input_ids: &Tensor) -> Result<Tensor> {
@@ -331,6 +368,69 @@ impl TrainableGemmaDecoder {
         let logits = self.norm.forward(&x)?.matmul(&self.embeddings.t()?)?;
         (logits / 30.0)?.tanh()?.affine(30.0, 0.0)
     }
+}
+
+/// Metrics returned after updating LoRA variables with each shifted dataset token.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FineTuneResult {
+    pub adapter: TrainableAdapter,
+    pub steps: usize,
+    pub mean_loss: f32,
+}
+
+/// Fine-tune an adapter with full-token causal cross entropy and Candle AdamW.
+pub fn fine_tune(
+    root: impl AsRef<Path>,
+    requested: RequestedDevice,
+    adapter: TrainableAdapter,
+    sequences: &[Vec<u32>],
+) -> std::result::Result<FineTuneResult, String> {
+    if sequences.is_empty() {
+        return Err("the training split contains no conversations".into());
+    }
+    let decoder = TrainableGemmaDecoder::load_1b_it(root, requested, &adapter)?;
+    let mut optimizer = AdamW::new(
+        decoder.adapter_variables(),
+        ParamsAdamW {
+            lr: adapter.config.learning_rate as f64,
+            ..ParamsAdamW::default()
+        },
+    )
+    .map_err(|error| format!("cannot initialize AdamW: {error}"))?;
+    let mut total_loss = 0.0;
+    let mut steps = 0;
+    for _ in 0..adapter.config.epochs {
+        for sequence in sequences {
+            let batch = CausalBatch::from_tokens(sequence)?;
+            let token_count = batch.token_count();
+            let inputs = Tensor::from_vec(
+                batch.inputs,
+                (1, token_count),
+                &decoder.device,
+            )
+            .map_err(|error| format!("cannot create training inputs: {error}"))?;
+            let targets = Tensor::from_vec(batch.targets, token_count, &decoder.device)
+                .map_err(|error| format!("cannot create training targets: {error}"))?;
+            let logits = decoder
+                .forward(&inputs)
+                .and_then(|logits| logits.reshape((token_count, VOCABULARY)))
+                .map_err(|error| format!("Gemma training forward pass failed: {error}"))?;
+            let loss = candle_nn::loss::cross_entropy(&logits, &targets)
+                .map_err(|error| format!("cannot calculate full-token cross entropy: {error}"))?;
+            total_loss += loss
+                .to_scalar::<f32>()
+                .map_err(|error| format!("cannot read training loss: {error}"))?;
+            optimizer
+                .backward_step(&loss)
+                .map_err(|error| format!("Candle AdamW update failed: {error}"))?;
+            steps += 1;
+        }
+    }
+    Ok(FineTuneResult {
+        adapter: decoder.trained_adapter()?,
+        steps,
+        mean_loss: total_loss / steps as f32,
+    })
 }
 fn causal_mask(
     batch: usize,
@@ -369,6 +469,29 @@ mod tests {
         let gradients = projection.forward(&input)?.sum_all()?.backward()?;
         assert!(gradients.get(&projection.a).is_some());
         assert!(gradients.get(&projection.b).is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn candle_adamw_updates_the_lora_variables() -> Result<()> {
+        let device = Device::Cpu;
+        let projection = LoraLinear {
+            base: FrozenLinear {
+                weight: Tensor::zeros((2, 2), DType::F32, &device)?,
+            },
+            a: Var::from_vec(vec![1f32, 2.], (1, 2), &device)?,
+            b: Var::from_vec(vec![3f32, 4.], (2, 1), &device)?,
+            scale: 1.0,
+        };
+        let before = projection.b.as_tensor().to_vec2::<f32>()?;
+        let input = Tensor::from_vec(vec![1f32, 1.], (1, 1, 2), &device)?;
+        let loss = projection.forward(&input)?.sum_all()?;
+        let mut optimizer = AdamW::new_lr(
+            vec![projection.a.clone(), projection.b.clone()],
+            0.001,
+        )?;
+        optimizer.backward_step(&loss)?;
+        assert_ne!(before, projection.b.as_tensor().to_vec2::<f32>()?);
         Ok(())
     }
 
