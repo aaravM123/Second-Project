@@ -1,4 +1,5 @@
 pub mod training;
+pub mod trainable;
 
 use candle_core::{DType, Device as CandleDevice, Result as CandleResult, Shape, Tensor, D};
 use candle_nn::{var_builder::SimpleBackend, Activation, Init, VarBuilder};
